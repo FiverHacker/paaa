@@ -19,6 +19,9 @@ from contextlib import asynccontextmanager
 from proxy_server import ProxyManager
 from models import ProxyConfig, ProxyConfigCreate, ProxyConfigUpdate
 from database import db
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Global proxy manager
 proxy_manager = ProxyManager()
@@ -238,11 +241,29 @@ async def start_proxy(proxy_id: int):
         await proxy_manager.start_proxy(config)
         return {"message": "Proxy started successfully"}
     except OSError as e:
-        if "Address already in use" in str(e) or "port" in str(e).lower():
-            raise HTTPException(status_code=400, detail=f"Port {config.listen_port} is already in use. Please choose a different port.")
-        raise HTTPException(status_code=500, detail=f"Failed to start proxy: {str(e)}")
+        error_str = str(e)
+        error_code = e.errno if hasattr(e, 'errno') else None
+        
+        # Handle specific error codes
+        if error_code == 98 or "errno 98" in error_str.lower() or "address already in use" in error_str.lower() or "EADDRINUSE" in error_str:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Port {config.listen_port} is already in use (EADDRINUSE). Please stop the service using this port or choose a different port."
+            )
+        elif error_code == 13 or "errno 13" in error_str.lower() or "Permission denied" in error_str:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Permission denied for port {config.listen_port}. Ports below 1024 require root privileges. Use a port >= 1024."
+            )
+        else:
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Failed to bind to port {config.listen_port}: {error_str}"
+            )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to start proxy: {str(e)}")
+        error_str = str(e)
+        logger.error(f"Error starting proxy {proxy_id}: {error_str}")
+        raise HTTPException(status_code=500, detail=f"Failed to start proxy: {error_str}")
 
 @app.post("/api/proxies/{proxy_id}/stop")
 async def stop_proxy(proxy_id: int):
