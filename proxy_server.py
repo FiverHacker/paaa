@@ -395,12 +395,14 @@ class ProxyServer:
             await connection.handle()
         
         try:
+            # Try to start the server - this will raise OSError if port is in use
             self.server = await asyncio.start_server(
                 handle_client,
                 self.config.listen_host,
                 self.config.listen_port
             )
             
+            # Mark as running only after server is successfully created
             self.is_running = True
             self.stats['start_time'] = time.time()
             logger.info(f"Proxy {self.config.name} started on {self.config.listen_host}:{self.config.listen_port}")
@@ -412,15 +414,40 @@ class ProxyServer:
                 logger.info(f"Proxy {self.config.name} task cancelled")
                 raise
         except OSError as e:
-            logger.error(f"Failed to start proxy {self.config.name}: {e}")
+            error_code = e.errno if hasattr(e, 'errno') else None
+            error_msg = str(e)
+            logger.error(f"Failed to start proxy {self.config.name} on {self.config.listen_host}:{self.config.listen_port} - Error {error_code}: {error_msg}")
             self.is_running = False
-            raise
+            self.server = None
+            # Re-raise with more context, preserving errno
+            if error_code == 98:  # EADDRINUSE - Address already in use
+                new_e = OSError(98, f"Address already in use - Port {self.config.listen_port} is already bound by another process")
+                new_e.errno = 98
+                raise new_e
+            elif error_code:
+                new_e = OSError(error_code, f"Cannot bind to {self.config.listen_host}:{self.config.listen_port} - {error_msg}")
+                new_e.errno = error_code
+                raise new_e
+            else:
+                raise OSError(f"Cannot bind to {self.config.listen_host}:{self.config.listen_port} - {error_msg}") from e
         except asyncio.CancelledError:
             self.is_running = False
+            if self.server:
+                try:
+                    self.server.close()
+                except:
+                    pass
+                self.server = None
             raise
         except Exception as e:
             logger.error(f"Unexpected error in proxy {self.config.name}: {e}")
             self.is_running = False
+            if self.server:
+                try:
+                    self.server.close()
+                except:
+                    pass
+                self.server = None
             raise
     
     async def stop(self):
@@ -460,13 +487,65 @@ class ProxyManager:
         proxy = ProxyServer(config, stats)
         self.proxies[config.id] = proxy
         
+        async def start_with_error_handling():
+            """Wrapper to handle start errors"""
+            try:
+                await proxy.start()
+            except Exception as e:
+                logger.error(f"Proxy {config.id} start() raised exception: {e}")
+                proxy.is_running = False
+                raise
+        
         try:
-            task = asyncio.create_task(proxy.start())
+            task = asyncio.create_task(start_with_error_handling())
             self.tasks[config.id] = task
+            
+            # Give the task a moment to start and check if it fails immediately
+            await asyncio.sleep(0.3)
+            
+            # Check if task has already completed (which means it failed)
+            if task.done():
+                try:
+                    await task  # This will raise the exception if one occurred
+                except OSError as e:
+                    # Port already in use or similar
+                    if config.id in self.proxies:
+                        del self.proxies[config.id]
+                    if config.id in self.tasks:
+                        del self.tasks[config.id]
+                    logger.error(f"Proxy {config.id} failed to start: {e}")
+                    raise
+                except Exception as e:
+                    # Clean up on failure
+                    if config.id in self.proxies:
+                        del self.proxies[config.id]
+                    if config.id in self.tasks:
+                        del self.tasks[config.id]
+                    logger.error(f"Proxy {config.id} failed to start: {e}")
+                    raise
+            
+            # Check if proxy is actually running
+            if not proxy.is_running:
+                # Task is running but proxy didn't start - wait a bit more
+                await asyncio.sleep(0.2)
+                if not proxy.is_running:
+                    # Still not running, something is wrong
+                    task.cancel()
+                    try:
+                        await task
+                    except:
+                        pass
+                    if config.id in self.proxies:
+                        del self.proxies[config.id]
+                    if config.id in self.tasks:
+                        del self.tasks[config.id]
+                    raise Exception(f"Proxy failed to start - server not running after initialization")
         except Exception as e:
-            logger.error(f"Failed to create task for proxy {config.id}: {e}")
+            logger.error(f"Failed to start proxy {config.id}: {e}")
             if config.id in self.proxies:
                 del self.proxies[config.id]
+            if config.id in self.tasks:
+                del self.tasks[config.id]
             raise
     
     async def stop_proxy(self, proxy_id: int):
