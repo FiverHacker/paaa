@@ -1,0 +1,30 @@
+{
+  "proxies": [
+    {
+      "id": 3,
+      "name": "gg",
+      "listen_host": "0.0.0.0",
+      "listen_port": 9000,
+      "upstream_host": null,
+      "upstream_port": null,
+      "upstream_username": null,
+      "upstream_password": null,
+      "require_auth": false,
+      "auth_username": null,
+      "auth_password": null,
+      "speed_limit_kbps": 0.0,
+      "description": "",
+      "speed_test_result": {
+        "download_speed_mbps": 3.6,
+        "upload_speed_mbps": 4.16,
+        "bytes_downloaded": 10486668,
+        "bytes_uploaded": 5242880,
+        "test_duration": 33.84,
+        "speed_limit_applied": false,
+        "speed_limit_mbps": null,
+        "test_time": 1765088400.7468212
+      }
+    }
+  ],
+  "next_id": 4
+}
